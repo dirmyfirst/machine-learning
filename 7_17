@@ -1,0 +1,473 @@
+#-*- coding:utf-8 -*-
+
+import time
+import os
+import os.path
+import re
+import sys
+import datetime
+
+from tkinter import Tk
+from tkinter import Frame
+from tkinter import ttk  
+from tkinter import scrolledtext  
+from tkinter import Menu  
+from tkinter import Spinbox 
+from tkinter import messagebox as mBox
+from tkinter import filedialog
+from tkinter import BooleanVar
+from tkinter import Checkbutton
+from tkinter import messagebox
+from tkinter.messagebox import *
+from tkinter import StringVar
+from tkinter import Button
+from tkinter import Label
+from tkinter import Entry
+from tkinter import IntVar
+
+from pandas import read_excel
+from pandas import read_csv
+from pandas import ExcelFile
+from pandas import ExcelWriter
+from pandas import DataFrame
+from pandas import Series
+
+from numpy.random import randint
+from numpy import around 
+
+
+from sklearn import preprocessing #标准化
+from sklearn.model_selection import train_test_split  # 数据切分
+from sklearn.svm import SVC #支持向量机分类算法
+from sklearn.ensemble import RandomForestClassifier #随机树林分类
+from sklearn.model_selection import cross_val_score #交叉验证
+
+from collections import Mapping
+from itertools import product
+from collections import Counter
+
+def log(*args, **kwargs):
+    ''' 运行记录 '''
+    localtime = time.asctime(time.localtime(time.time()))
+    print('log:', localtime, '\n', *args, **kwargs)
+
+
+def read(file_address, sheet_name=0, sep=','):
+    directory_name, file_name = os.path.split(file_address)
+    fileName, suffix = os.path.splitext(file_name)
+    if suffix == '.csv':
+        df = read_csv(file_address,
+            sep = sep,
+            header = 0,
+            encoding = 'gbk',
+            engine = 'python',
+            )
+    elif suffix == '.xlsx':
+        df = read_excel(file_address,
+            sheetname = sheet_name,
+            index = None,
+            header = 0, 
+            encoding = 'utf-8',
+            )
+    elif suffix == '.xls':
+        xls_file = ExcelFile(file_address)
+        df = read_excel(xls_file,
+            sheetname = sheet_name,
+            index = None,
+            header = 0,
+            encoding = 'utf-8',
+            )
+    else:
+        raise TypeError('文件类型错误，请输入xls/xlsx/csv文件')
+
+    log(df.head())
+
+    return df
+
+class ParameterGrid(object):
+
+    def __init__(self, param_grid):
+        if isinstance(param_grid, Mapping):
+            param_grid = [param_grid]
+            self.param_grid = param_grid
+
+    def __iter__(self):
+        for p in self.param_grid:
+            items = sorted(p.items())
+            if not items:
+                yield {}
+            else:
+                keys, values = zip(*items)
+                for v in product(*values):
+                    params = dict(zip(keys, v))
+                    yield params
+
+class Data(object):
+
+    def __init__(self, df):
+
+        df = df.drop('小区名称', axis=1) if '小区名称' in df.columns.values.tolist() else df 
+        self.columns = df.columns.values.tolist()
+        label = df.pop(self.columns[len(self.columns) - 1])
+        self.label = around(label.values * 1000)
+        self.values = df.values
+        self.stand()
+        self.data_split()
+
+    def stand(self):
+        min_max_scaler = preprocessing.MinMaxScaler(copy=True, feature_range=(-1, 1))
+        self.scaler_X = min_max_scaler.fit_transform(self.values)
+
+    def data_split(self):
+        self.train_X, self.test_X, self.train_y, self.test_y = \
+        train_test_split(self.scaler_X,
+                        self.label,
+                        test_size = 0.3,
+                        random_state = 0)
+
+class PredictData(object):
+
+    def __init__(self, df):
+
+        df = df.drop('小区名称', axis=1) if '小区名称' in df.columns.values.tolist() else df 
+        self.columns = df.columns.values.tolist()
+        self.values = df.values
+        self.stand()
+
+    def stand(self):
+        min_max_scaler = preprocessing.MinMaxScaler(copy=True, feature_range=(-1, 1))
+        self.scaler_X = min_max_scaler.fit_transform(self.values)
+
+
+
+class Rfc(Data):
+
+    def __init__(self, df, predict_df):
+        super().__init__(df)
+        self.data_split()
+        self.predict_df = predict_df
+        #max_features = randint(df.shape[1], size=(3))
+        self.parameters = {'n_estimators': [100],
+                    'criterion': ['entropy'],
+                    'min_samples_leaf':[20],
+                    'max_features': [None]}
+        self.predict()
+
+
+    def learnModel(self, 
+                n_estimators=10, 
+                criterion='gini', 
+                min_samples_leaf=1, 
+                max_features='auto'):
+        random_forest = RandomForestClassifier(n_estimators = n_estimators,
+                                            criterion = criterion, 
+                                            min_samples_leaf = min_samples_leaf,
+                                            max_features = max_features)
+        log('self.train_X:', self.train_X)
+        log('self.train_y:', self.train_y)
+
+        random_forest.fit(self.train_X, self.train_y)
+        print ('随机森林分类预测测试集数据准确率{0:.2f}'.format(random_forest.score(self.test_X, self.test_y)))
+        accuracy = random_forest.score(self.test_X, self.test_y)
+        return [n_estimators, criterion, min_samples_leaf, max_features, accuracy]
+
+    def selectpar(self):
+        log('搜索执行')
+        df_record_list = DataFrame(columns=[
+                                            'n_estimators',
+                                            'criterion',
+                                            'min_samples_leaf', 
+                                            'max_features', 
+                                            'accuracy',
+                                            ])
+        for par in ParameterGrid(self.parameters):
+            log('par:',par)
+            record = self.learnModel(n_estimators=par['n_estimators'],
+                                criterion=par['criterion'],
+                                min_samples_leaf=par['min_samples_leaf'],
+                                max_features=par['max_features'])
+            log(record)
+            df_record_list.loc[df_record_list.shape[0]] = record
+        newdf = df_record_list.sort_values(by='accuracy', ascending=False)
+        par_dict = dict(zip(newdf.columns.values.tolist(), newdf.iloc[0]))
+        log('参数字典',par_dict)
+
+        return par_dict
+
+    def predict(self):
+        par_dict = self.selectpar()
+        log('predict,par_dict', par_dict)
+        random_forest = RandomForestClassifier(n_estimators = par_dict['n_estimators'],
+                                            criterion = par_dict['criterion'], 
+                                            min_samples_leaf = par_dict['min_samples_leaf'],
+                                            max_features = par_dict['max_features'])
+        random_forest.fit(self.scaler_X, self.label)
+
+        data = PredictData(self.predict_df)
+        self.label_y = random_forest.predict(data.scaler_X)
+        log('label_y',self.label_y)
+
+
+def writeFile(df, excelName):
+    writer = ExcelWriter(excelName)
+    df = DataFrame(df)
+    df.to_excel(
+        writer,
+        header=1,
+        index=None,
+        engine='python',
+        )
+    writer.save()
+    log('保存完成')
+
+
+class IndexFrame(Frame):
+    '''首页 + 控制页面'''
+    def __init__(self, master=None):
+
+        Frame.__init__(self, master)
+        self.root = master
+        self.itemName = StringVar()
+        self.createPage()
+
+    def createPage(self):
+        #Label(self, text='首页').grid(row=0,column=0)
+        classiFication = Button(self, text='分类算法',width=30, pady=7, command=self.classiFication_frame)
+        classiFication.grid(row=0, column=0, pady=6)
+
+        clustering = Button(self, text='聚类算法',width=30, pady=7, command=self.clustering_frame)
+        clustering.grid(row=1, column=0, pady=6)
+
+        feature = Button(self, text='特征分析',width=30, pady=7, command=self.feature_frame)
+        feature.grid(row=2,column=0, pady=6)
+
+    def classiFication_frame(self):
+        self.destroy()
+        mainpage = MainPage(root)
+        return mainpage.classiFicationData()
+
+    def clustering_frame(self):
+        self.destroy()
+        mainpage = MainPage(root)
+        return mainpage.clusteringData()
+
+    def feature_frame(self):
+        self.destroy()
+        mainpage = MainPage(root)
+        return mainpage.featureData()
+
+
+class ClassiFicationFrame(Frame):
+    '''分类算法'''
+    def __init__(self, master=None):  
+        Frame.__init__(self, master)  
+        self.root = master  
+        self.createPage() 
+  
+    def createPage(self):
+        Label(self, text='分类算法').grid(row=0,column=0)
+        #设置窗口背景
+        style = ttk.Style() 
+        style.configure("BW.TLabel", font=("微软雅黑", "12"))  #默认字体
+
+        self.learn_pathdb = StringVar()
+        Entry(self, textvariable = self.learn_pathdb, width=50).grid(row=1, column=0)
+        Button(self, text='导入学习文件', command=self.selectLearningPath).grid(row=1,column=1)
+
+        self.predict_pathdb = StringVar()
+        Entry(self, textvariable = self.predict_pathdb, width=50).grid(row=2, column=0)
+        Button(self, text='导入预测文件', command=self.selectPreDictPath).grid(row=2,column=1)
+
+        Button(self, text='运行', command=self.run).grid(row=3,column=1)
+
+        algo_frame = Frame(self)
+        algo_frame.grid(row=3)
+
+        self.algorithm1 = BooleanVar()
+        Checkbutton1 = Checkbutton(algo_frame, text="支持向量机", variable= self.algorithm1, command=self.func)
+        Checkbutton1.grid(row=0, column= 0, sticky='W')
+
+        self.algorithm2 = BooleanVar()
+        Checkbutton2 = Checkbutton(algo_frame, text="随机森林", variable= self.algorithm2, command=self.func)
+        Checkbutton2.grid(row=0, column = 1, sticky='W')
+        
+    def selectLearningPath(self):
+        path = filedialog.askopenfilename()
+        self.learn_pathdb.set(path)
+        self.fitPath = path 
+
+    def selectPreDictPath(self):
+        path = filedialog.askopenfilename()
+        self.predict_pathdb.set(path)
+        self.predictPath = path 
+
+    def callCheckbutton(self):
+        print(self.variables)
+
+    def func(self):
+        get_ls = [self.algorithm1.get(), self.algorithm2.get()]
+        checks = ['支持向量机', '随机森林']
+        new_ls = []
+        for index, get in enumerate(get_ls):
+            if get:
+                new_ls.append(checks[index])
+        self.new_ls = new_ls
+  
+    def run(self):
+        print(self.new_ls)
+        fitDf = read(self.fitPath)
+        predictDf = read(self.predictPath)
+        if '随机森林' in self.new_ls:
+            rfc = Rfc(fitDf, predictDf)
+            log('rfc:',rfc.label_y)
+            series_label = Series(rfc.label_y)
+            log('series_label:',series_label)
+
+
+            predictDf['随机森林预测结果'] = series_label
+
+        writeFile(predictDf, '随机森林预测结果.xlsx')
+
+
+
+
+
+
+
+class ClusteringFrame(Frame):
+    '''聚类算法'''
+    def __init__(self, master=None):  
+        Frame.__init__(self, master)  
+        self.root = master  
+        self.createPage() 
+  
+    def createPage(self):
+        Label(self, text='聚类算法').grid(row=0,column=0)
+        #设置窗口背景
+        style = ttk.Style() 
+        style.configure("BW.TLabel", font=("微软雅黑", "12"))  #默认字体
+
+        self.learn_pathdb = StringVar()
+        Entry(self, textvariable = self.learn_pathdb, width=50).grid(row=1, column=0)
+        Button(self, text='导入学习文件', command=self.selectLearningPath).grid(row=1,column=1)
+
+        self.predict_pathdb = StringVar()
+        Entry(self, textvariable = self.predict_pathdb, width=50).grid(row=2, column=0)
+        Button(self, text='导入预测文件', command=self.selectPreDictPath).grid(row=2,column=1)
+
+        algo_frame = Frame(self)
+        algo_frame.grid(row=3)
+
+        self.svm_check = IntVar()
+        Checkbutton(algo_frame, text="支持向量机", variable=self.svm_check).grid(row=0, column= 0,sticky='W')
+        self.random_forest = IntVar()
+        Checkbutton(algo_frame, text="随机森林", variable=self.random_forest).grid(row=0,column = 1, sticky='W')
+        
+    def selectLearningPath(self):
+        path = filedialog.askopenfilename()
+        self.learn_pathdb.set(path)
+
+    def selectPreDictPath(self):
+        path = filedialog.askopenfilename()
+        self.predict_pathdb.set(path)
+
+
+class FeatureFrame(Frame):
+    '''特征分析'''
+    def __init__(self, master=None):  
+        Frame.__init__(self, master)  
+        self.root = master  
+        self.createPage() 
+  
+    def createPage(self):
+        Label(self, text='特征分析').grid(row=0,column=0)
+        #设置窗口背景
+        style = ttk.Style() 
+        style.configure("BW.TLabel", font=("微软雅黑", "12"))  #默认字体
+
+        self.learn_pathdb = StringVar()
+        Entry(self, textvariable = self.learn_pathdb, width=50).grid(row=1, column=0)
+        Button(self, text='导入学习文件', command=self.selectLearningPath).grid(row=1,column=1)
+
+        self.predict_pathdb = StringVar()
+        Entry(self, textvariable = self.predict_pathdb, width=50).grid(row=2, column=0)
+        Button(self, text='导入预测文件', command=self.selectPreDictPath).grid(row=2,column=1)
+
+        algo_frame = Frame(self)
+        algo_frame.grid(row=3)
+
+        self.svm_check = IntVar()
+        Checkbutton(algo_frame, text="支持向量机", variable=self.svm_check).grid(row=0, column= 0,sticky='W')
+        self.random_forest = IntVar()
+        Checkbutton(algo_frame, text="随机森林", variable=self.random_forest).grid(row=0,column = 1, sticky='W')
+        
+    def selectLearningPath(self):
+        path = filedialog.askopenfilename()
+        self.learn_pathdb.set(path)
+
+    def selectPreDictPath(self):
+        path = filedialog.askopenfilename()
+        self.predict_pathdb.set(path)
+
+
+
+#---------------------------------------------------------------
+#控制台
+#菜单栏对应的各个子页面 
+class MainPage(object):
+    def __init__(self, master=None):  
+        self.root = master 
+        self.root.geometry('700x500') 
+        self.createPage() 
+    def createPage(self):
+        '''页面'''
+        self.indexPage = IndexFrame(self.root)
+        self.classiFicationPage = ClassiFicationFrame(self.root)
+        self.clusteringPage = ClusteringFrame(self.root)
+        self.featurePage = FeatureFrame(self.root)
+
+        #默认显示首页界面
+        self.indexPage.pack()
+        #菜单
+        menubar = Menu(self.root)
+        menubar.add_command(label='首页', command = self.indexData)
+        menubar.add_command(label='分类算法', command = self.classiFicationData)
+        menubar.add_command(label='聚类算法', command = self.clusteringData)
+        menubar.add_command(label='特征分析', command = self.featureData)
+   
+        menubar.add_command(label='退出', command = self.root.quit)
+        self.root['menu'] = menubar  # 设置菜单栏
+    
+    def indexData(self):
+        self.indexPage.pack()
+        self.classiFicationPage.pack_forget()
+        self.clusteringPage.pack_forget()
+        self.featurePage.pack_forget()
+ 
+    def classiFicationData(self):
+        self.indexPage.pack_forget() 
+        self.classiFicationPage.pack()
+        self.clusteringPage.pack_forget()
+        self.featurePage.pack_forget()
+
+    def clusteringData(self):
+        self.indexPage.pack_forget() 
+        self.classiFicationPage.pack_forget() 
+        self.clusteringPage.pack()
+        self.featurePage.pack_forget()
+
+    def featureData(self):
+        self.indexPage.pack_forget() 
+        self.classiFicationPage.pack_forget() 
+        self.clusteringPage.pack_forget()
+        self.featurePage.pack()
+
+
+if __name__ == '__main__':
+    root = Tk()
+    root.title("机器学习系统")
+    root.resizable(False, False) #不允许改变窗口大小
+    style = ttk.Style() #设置窗口背景 
+    style.configure("BW.TLabel", font=("微软雅黑", "12"))  #默认字体 
+    MainPage(root)
+    root.mainloop()
