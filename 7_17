@@ -13,17 +13,16 @@ from tkinter import ttk
 from tkinter import scrolledtext  
 from tkinter import Menu  
 from tkinter import Spinbox 
-from tkinter import messagebox as mBox
+from tkinter import messagebox
 from tkinter import filedialog
 from tkinter import BooleanVar
 from tkinter import Checkbutton
-from tkinter import messagebox
-from tkinter.messagebox import *
 from tkinter import StringVar
 from tkinter import Button
 from tkinter import Label
 from tkinter import Entry
 from tkinter import IntVar
+from tkinter.simpledialog import askstring, askinteger, askfloat
 
 from pandas import read_excel
 from pandas import read_csv
@@ -36,15 +35,16 @@ from numpy.random import randint
 from numpy import around 
 
 
-from sklearn import preprocessing #标准化
-from sklearn.model_selection import train_test_split  # 数据切分
-from sklearn.svm import SVC #支持向量机分类算法
-from sklearn.ensemble import RandomForestClassifier #随机树林分类
-from sklearn.model_selection import cross_val_score #交叉验证
+from sklearn import preprocessing 
+from sklearn.model_selection import train_test_split  
+from sklearn.svm import SVC 
+from sklearn.ensemble import RandomForestClassifier 
+from sklearn.model_selection import cross_val_score 
 
 from collections import Mapping
-from itertools import product
 from collections import Counter
+from itertools import product
+
 
 def log(*args, **kwargs):
     ''' 运行记录 '''
@@ -208,17 +208,96 @@ class Rfc(Data):
         log('label_y',self.label_y)
 
 
-def writeFile(df, excelName):
-    writer = ExcelWriter(excelName)
-    df = DataFrame(df)
-    df.to_excel(
-        writer,
-        header=1,
-        index=None,
-        engine='python',
-        )
-    writer.save()
+class Svc(Data):
+
+    def __init__(self, df, predict_df):
+        super().__init__(df)
+        self.data_split()
+        self.predict_df = predict_df
+        #max_features = randint(df.shape[1], size=(3))
+        self.parameters = {'C': [0.5], #0.1 0.5, 1.0
+                    'kernel': ["poly"], #"linear", "poly", "rbf", "sigmoid", "precomputed"
+                    'degree': [3],
+                    'gamma': ['auto']} #"poly", "rbf", "sigmoid"
+
+        self.predict()
+
+    def learnModel(self, 
+                C = 0.1, 
+                kernel = 'poly', 
+                degree = 3, 
+                gamma = 'auto'):
+        svc_clf = SVC(C = C,
+                    kernel = kernel, 
+                    degree = degree,
+                    gamma = gamma)
+        log('self.train_X:', self.train_X)
+        log('self.train_y:', self.train_y)
+
+        svc_clf.fit(self.train_X, self.train_y)
+        print ('随机森林分类预测测试集数据准确率{0:.2f}'.format(svc_clf.score(self.test_X, self.test_y)))
+        accuracy = svc_clf.score(self.test_X, self.test_y)
+        return [C, kernel, degree, gamma, accuracy]
+
+    def selectpar(self):
+        log('搜索执行')
+        df_record_list = DataFrame(columns=[
+                                            'C',
+                                            'kernel',
+                                            'degree', 
+                                            'gamma', 
+                                            'accuracy',
+                                            ])
+        for par in ParameterGrid(self.parameters):
+            log('par:',par)
+            record = self.learnModel(C=par['C'],
+                                kernel=par['kernel'],
+                                degree=par['degree'],
+                                gamma=par['gamma'])
+            log(record)
+            df_record_list.loc[df_record_list.shape[0]] = record
+        newdf = df_record_list.sort_values(by='accuracy', ascending=False)
+        par_dict = dict(zip(newdf.columns.values.tolist(), newdf.iloc[0]))
+        log('参数字典',par_dict)
+
+        return par_dict
+
+    def predict(self):
+        par_dict = self.selectpar()
+        log('predict,par_dict', par_dict)
+        svc_clf = SVC(C = par_dict['C'],
+                            kernel = par_dict['kernel'], 
+                            degree = par_dict['degree'],
+                            gamma = par_dict['gamma'])
+        svc_clf.fit(self.scaler_X, self.label)
+
+        data = PredictData(self.predict_df)
+        self.label_y = svc_clf.predict(data.scaler_X)
+        log('label_y',self.label_y)
+
+def writeFile(df, fileName, sheet_name=0, sep=','):
+
+    name, suffix = os.path.splitext(fileName)
+    if suffix == '.csv':
+        df.to_csv(fileName,
+            sep = sep,
+            header = 1,
+            encoding = 'gbk',
+            )
+    elif suffix == '.xlsx':
+        writer = ExcelWriter(fileName)
+        df.to_excel(writer,
+            index = None,
+            header = 1, 
+            encoding = 'utf-8',
+            )
+        writer.save()
+    else:
+       messagebox.showwarning("警告",'警告：文件类型无法保存，请输入xlsx/csv文件！')
+
     log('保存完成')
+    mess = fileName + '保存完成'
+    messagebox.showinfo('提示', mess)
 
 
 class IndexFrame(Frame):
@@ -314,25 +393,36 @@ class ClassiFicationFrame(Frame):
         self.new_ls = new_ls
   
     def run(self):
-        print(self.new_ls)
-        fitDf = read(self.fitPath)
-        predictDf = read(self.predictPath)
+        messagebox.showinfo('提示', '点击确定开始运行\n因为调整参数您可能要稍等几分钟才能得到结果')
+        try:
+            print(self.new_ls)
+        except:
+            messagebox.showwarning("警告",'警告：您没有选取算法！')
+
+        try:
+            fitDf = read(self.fitPath)
+            predictDf = read(self.predictPath)
+        except AttributeError:
+            messagebox.showwarning("警告",'警告：你没有导入文件！')
+
         if '随机森林' in self.new_ls:
             rfc = Rfc(fitDf, predictDf)
-            log('rfc:',rfc.label_y)
             series_label = Series(rfc.label_y)
             log('series_label:',series_label)
-
-
             predictDf['随机森林预测结果'] = series_label
 
-        writeFile(predictDf, '随机森林预测结果.xlsx')
+        if '支持向量机' in self.new_ls:
+            #try:
+            svc_clf = Svc(fitDf, predictDf)
+            series_label = Series(svc_clf.label_y)
+            log('series_label:',series_label)
+            predictDf['支持向量机预测结果'] = series_label
+            #except:
+            
 
-
-
-
-
-
+        res = askstring("文字输入", "请输入你要写入的文件名")
+        print(res,type(res))
+        writeFile(predictDf, res)
 
 class ClusteringFrame(Frame):
     '''聚类算法'''
